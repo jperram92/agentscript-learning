@@ -1,0 +1,143 @@
+system:
+    instructions: "You are a customer support agent for Acme Corp. Help customers check order status. Keep responses concise, professional, and focused on order support."
+    messages:
+        welcome: "Hi, I can help you check an order status."
+        error: "Sorry, something went wrong while checking the order."
+
+config:
+    developer_name: "Acme_Order_Status_Agent"
+    default_agent_user: "james.perram.d5e8f2c9f9a0@agentforce.com"
+    agent_label: "Acme Order Status Agent"
+    description: "Collects a customer email and order number, then looks up a mock order status through Apex."
+
+variables:
+    customer_email: mutable string = ""
+        description: "The customer's email address used as identity context for the order lookup."
+
+    order_id: mutable string = ""
+        description: "The order number provided by the customer."
+
+    order_status: mutable string = ""
+        description: "The latest order status returned by the lookup action."
+
+    lookup_message: mutable string = ""
+        description: "The latest message returned by the lookup action."
+
+    lookup_succeeded: mutable boolean = False
+        description: "Whether the most recent order lookup succeeded."
+
+language:
+    default_locale: "en_US"
+    additional_locales: ""
+    all_additional_locales: False
+
+start_agent topic_selector:
+    label: "Topic Selector"
+    description: "Route the user to the best topic for the current request."
+
+    reasoning:
+        instructions: ->
+            | Select the tool that best matches the user's message and conversation history. If it's unclear, make your best guess.
+        actions:
+            go_to_order_help: @utils.transition to @topic.order_help
+                description: "Use for order status, shipment, delivery, tracking, or order number questions."
+            go_to_escalation: @utils.transition to @topic.escalation
+                description: "Use when the customer explicitly asks for a human or live agent."
+            go_to_off_topic: @utils.transition to @topic.off_topic
+                description: "Use when the customer asks for something unrelated to Acme order support."
+            go_to_ambiguous_question: @utils.transition to @topic.ambiguous_question
+                description: "Use when the request is too vague to act on."
+
+topic order_help:
+    label: "Order Help"
+    description: "Collect the required order details and return order status."
+
+    actions:
+        lookup_order_status:
+            description: "Looks up the current order status for the provided order number."
+            inputs:
+                order_id: string
+                    description: "The order number to look up."
+                    is_required: True
+            outputs:
+                order_status: string
+                    description: "The current order status."
+                success: boolean
+                    description: "Whether the lookup succeeded."
+                message: string
+                    description: "Human-readable lookup result message."
+            target: "apex://OrderStatusLookupService"
+
+    reasoning:
+        instructions: ->
+            |
+                Help the customer check an order status.
+
+                Current details:
+            if @variables.customer_email:
+                | - Email: {!@variables.customer_email}
+            else:
+                | - Email: Not collected
+
+            if @variables.order_id:
+                | - Order ID: {!@variables.order_id}
+            else:
+                | - Order ID: Not collected
+
+            if @variables.order_status:
+                | - Current order status: {!@variables.order_status}
+            else:
+                | - Current order status: Not looked up yet
+
+            | Rules:
+              1. Do not check the order until both the email and order number have been collected.
+              2. Ask only for the next missing piece of information.
+              3. When both values are available and no status has been retrieved yet, use {!@actions.lookup_order_status_tool}.
+              4. If a status was already retrieved, summarize it and ask whether the customer needs anything else related to the order.
+        actions:
+            set_customer_email: @utils.setVariables
+                with customer_email = ...
+                description: "Store the customer's email address when they provide it."
+            set_order_id: @utils.setVariables
+                with order_id = ...
+                with order_status = ""
+                with lookup_message = ""
+                with lookup_succeeded = False
+                description: "Store the customer's order number and clear any prior lookup result."
+            lookup_order_status_tool: @actions.lookup_order_status
+                with order_id = @variables.order_id
+                set @variables.order_status = @outputs.order_status
+                set @variables.lookup_succeeded = @outputs.success
+                set @variables.lookup_message = @outputs.message
+
+topic escalation:
+    label: "Escalation"
+    description: "Handles requests to transfer the conversation to a human."
+
+    reasoning:
+        instructions: ->
+            | If the customer explicitly asks for a live or human agent, escalate the conversation.
+              If escalation fails, apologize briefly and ask whether they want to continue with order support here.
+        actions:
+            escalate_to_human: @utils.escalate
+                description: "Transfer the conversation to a human agent."
+
+topic off_topic:
+    label: "Off Topic"
+    description: "Redirect unrelated conversations back to order support."
+
+    reasoning:
+        instructions: ->
+            | Politely redirect the customer back to Acme order support.
+              Only answer greetings and capability questions.
+              Do not answer general knowledge or unrelated business questions.
+
+topic ambiguous_question:
+    label: "Ambiguous Question"
+    description: "Ask the user to clarify an unclear request."
+
+    reasoning:
+        instructions: ->
+            | Ask the customer for the one missing detail needed to continue.
+              Keep the prompt short and focused.
+
